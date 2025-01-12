@@ -1,195 +1,225 @@
-const { Sequelize, DataTypes, Op } = require('sequelize');
-const path = require('path');
+const initSqlJs = require('sql.js');
 const fs = require('fs');
-const electron = require('electron');
+const path = require('path');
 
-// Get the correct database path based on environment
-const getDbPath = () => {
-    // Check if we're in development or production
-    const isDev = process.env.ELECTRON_IS_DEV === 1 || !electron.app;
-    
-    let dbPath;
-    if (isDev) {
-        // Development path
-        dbPath = path.join(__dirname, '..', 'database.sqlite');
-    } else {
-        // Production path
-        dbPath = path.join(process.resourcesPath, 'database.sqlite');
-    }
-    
-    console.log('Database Path:', dbPath);
-    console.log('Environment:', isDev ? 'Development' : 'Production');
-    return dbPath;
-};
+let db;
+let SQL;
 
-const dbPath = getDbPath();
-console.log('Using database at:', dbPath);
-
-// Create the database directory if it doesn't exist
-const dbDir = path.dirname(dbPath);
-if (!fs.existsSync(dbDir)) {
-    console.log('Creating database directory:', dbDir);
-    fs.mkdirSync(dbDir, { recursive: true });
-}
-
-// Initialize Sequelize with better logging
-const sequelize = new Sequelize({
-    dialect: 'sqlite',
-    storage: dbPath,
-    logging: (msg) => console.log('Sequelize:', msg),
-    dialectOptions: {
-        // SQLite specific options
-        timeout: 30000, // 30 seconds
-    }
-});
-
-// Model definitions
-const Product = sequelize.define('Product', {
-    id: {
-        type: DataTypes.INTEGER,
-        primaryKey: true,
-        autoIncrement: true
-    },
-    name: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true
-    },
-    rate: {
-        type: DataTypes.DECIMAL(10, 2),
-        allowNull: false
-    }
-});
-
-const Customer = sequelize.define('Customer', {
-    id: {
-        type: DataTypes.INTEGER,
-        primaryKey: true,
-        autoIncrement: true
-    },
-    name: {
-        type: DataTypes.STRING,
-        allowNull: false
-    },
-    mobile: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true
-    },
-    address: {
-        type: DataTypes.TEXT,
-        allowNull: false
-    }
-});
-
-const Invoice = sequelize.define('Invoice', {
-    id: {
-        type: DataTypes.INTEGER,
-        primaryKey: true,
-        autoIncrement: true
-    },
-    invoiceNumber: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true
-    },
-    date: {
-        type: DataTypes.DATE,
-        allowNull: false,
-        defaultValue: DataTypes.NOW
-    },
-    total: {
-        type: DataTypes.DECIMAL(10, 2),
-        allowNull: false,
-        defaultValue: 0
-    }
-});
-
-const InvoiceItem = sequelize.define('InvoiceItem', {
-    id: {
-        type: DataTypes.INTEGER,
-        primaryKey: true,
-        autoIncrement: true
-    },
-    quantity: {
-        type: DataTypes.INTEGER,
-        allowNull: false
-    },
-    rate: {
-        type: DataTypes.DECIMAL(10, 2),
-        allowNull: false
-    },
-    total: {
-        type: DataTypes.DECIMAL(10, 2),
-        allowNull: false
-    }
-});
-
-// Define relationships
-Invoice.belongsTo(Customer);
-Customer.hasMany(Invoice);
-
-Invoice.hasMany(InvoiceItem);
-InvoiceItem.belongsTo(Invoice);
-
-InvoiceItem.belongsTo(Product);
-Product.hasMany(InvoiceItem);
-
-// Enhanced database setup function with better error handling and logging
 const setupDatabase = async () => {
     try {
         console.log('Starting database setup...');
+        SQL = await initSqlJs();
         
-        // Test database existence and permissions
-        if (fs.existsSync(dbPath)) {
-            console.log('Database file exists');
-            try {
-                // Test file permissions
-                await fs.promises.access(dbPath, fs.constants.R_OK | fs.constants.W_OK);
-                console.log('Database file is readable and writable');
-            } catch (error) {
-                console.error('Database file permission error:', error);
-                throw new Error('Database file permission error');
-            }
-        } else {
-            console.log('Database file does not exist, will be created');
-        }
+        // Create new database
+        db = new SQL.Database();
 
-        // Test database connection
-        await sequelize.authenticate();
-        console.log('Database connection established successfully');
+        // Create tables with all necessary fields and constraints
+        db.run(`
+            CREATE TABLE IF NOT EXISTS Products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                rate DECIMAL(10,2) NOT NULL,
+                createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE TABLE IF NOT EXISTS Customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                mobile TEXT NOT NULL UNIQUE,
+                address TEXT NOT NULL,
+                createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
 
-        // Sync database schema
-        await sequelize.sync();
-        console.log('Database synchronized successfully');
+            CREATE TABLE IF NOT EXISTS Invoices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoiceNumber TEXT NOT NULL UNIQUE,
+                date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                total DECIMAL(10,2) NOT NULL DEFAULT 0,
+                CustomerId INTEGER,
+                createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (CustomerId) REFERENCES Customers(id)
+            );
 
-        // Check if we need to create sample data
-        const customerCount = await Customer.count();
-        console.log('Current customer count:', customerCount);
+            CREATE TABLE IF NOT EXISTS InvoiceItems (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                InvoiceId INTEGER,
+                ProductId INTEGER,
+                quantity INTEGER NOT NULL,
+                rate DECIMAL(10,2) NOT NULL,
+                total DECIMAL(10,2) NOT NULL,
+                createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (InvoiceId) REFERENCES Invoices(id),
+                FOREIGN KEY (ProductId) REFERENCES Products(id)
+            );
 
-        return true;
+            -- Create indexes for better performance
+            CREATE INDEX IF NOT EXISTS idx_products_name ON Products(name);
+            CREATE INDEX IF NOT EXISTS idx_customers_mobile ON Customers(mobile);
+            CREATE INDEX IF NOT EXISTS idx_invoices_number ON Invoices(invoiceNumber);
+            CREATE INDEX IF NOT EXISTS idx_invoices_date ON Invoices(date);
+            CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON InvoiceItems(InvoiceId);
+            CREATE INDEX IF NOT EXISTS idx_invoice_items_product ON InvoiceItems(ProductId);
+        `);
+
+        console.log('Database tables and indexes created successfully');
+
+        // Create triggers for updating timestamps
+        db.run(`
+            -- Products updatedAt trigger
+            CREATE TRIGGER IF NOT EXISTS update_products_timestamp 
+            AFTER UPDATE ON Products
+            BEGIN
+                UPDATE Products SET updatedAt = CURRENT_TIMESTAMP
+                WHERE id = NEW.id;
+            END;
+
+            -- Customers updatedAt trigger
+            CREATE TRIGGER IF NOT EXISTS update_customers_timestamp
+            AFTER UPDATE ON Customers
+            BEGIN
+                UPDATE Customers SET updatedAt = CURRENT_TIMESTAMP
+                WHERE id = NEW.id;
+            END;
+
+            -- Invoices updatedAt trigger
+            CREATE TRIGGER IF NOT EXISTS update_invoices_timestamp
+            AFTER UPDATE ON Invoices
+            BEGIN
+                UPDATE Invoices SET updatedAt = CURRENT_TIMESTAMP
+                WHERE id = NEW.id;
+            END;
+
+            -- InvoiceItems updatedAt trigger
+            CREATE TRIGGER IF NOT EXISTS update_invoice_items_timestamp
+            AFTER UPDATE ON InvoiceItems
+            BEGIN
+                UPDATE InvoiceItems SET updatedAt = CURRENT_TIMESTAMP
+                WHERE id = NEW.id;
+            END;
+        `);
+
+        console.log('Database triggers created successfully');
+
+        return db;
     } catch (error) {
         console.error('Database setup error:', error);
-        // Add more detailed error information
-        console.error('Error details:', {
-            message: error.message,
-            code: error.code,
-            stack: error.stack,
-            path: dbPath,
-            exists: fs.existsSync(dbPath)
-        });
         throw error;
     }
 };
 
-// Export all necessary components
+const getDatabase = () => {
+    if (!db) {
+        throw new Error('Database not initialized. Call setupDatabase first.');
+    }
+    return db;
+};
+
+// Helper functions for common operations
+const dbHelpers = {
+    // Products
+    getAllProducts: () => {
+        const result = db.exec('SELECT * FROM Products ORDER BY name ASC');
+        return result[0]?.values.map(row => ({
+            id: row[0],
+            name: row[1],
+            rate: row[2],
+            createdAt: row[3],
+            updatedAt: row[4]
+        })) || [];
+    },
+
+    // Customers
+    getAllCustomers: () => {
+        const result = db.exec('SELECT * FROM Customers ORDER BY name ASC');
+        return result[0]?.values.map(row => ({
+            id: row[0],
+            name: row[1],
+            mobile: row[2],
+            address: row[3],
+            createdAt: row[4],
+            updatedAt: row[5]
+        })) || [];
+    },
+
+    // Invoices with customer details
+    getAllInvoices: () => {
+        const query = `
+            SELECT 
+                i.*,
+                c.name as customerName,
+                c.mobile as customerMobile,
+                c.address as customerAddress
+            FROM Invoices i
+            LEFT JOIN Customers c ON i.CustomerId = c.id
+            ORDER BY i.date DESC
+        `;
+        const result = db.exec(query);
+        return result[0]?.values.map(row => ({
+            id: row[0],
+            invoiceNumber: row[1],
+            date: row[2],
+            total: row[3],
+            CustomerId: row[4],
+            createdAt: row[5],
+            updatedAt: row[6],
+            customerDetails: {
+                name: row[7],
+                mobile: row[8],
+                address: row[9]
+            }
+        })) || [];
+    },
+
+    // Invoice items with product details
+    getInvoiceItems: (invoiceId) => {
+        const query = `
+            SELECT 
+                ii.*,
+                p.name as productName
+            FROM InvoiceItems ii
+            LEFT JOIN Products p ON ii.ProductId = p.id
+            WHERE ii.InvoiceId = ?
+        `;
+        const result = db.exec(query, [invoiceId]);
+        return result[0]?.values.map(row => ({
+            id: row[0],
+            InvoiceId: row[1],
+            ProductId: row[2],
+            quantity: row[3],
+            rate: row[4],
+            total: row[5],
+            createdAt: row[6],
+            updatedAt: row[7],
+            productName: row[8]
+        })) || [];
+    }
+};
+
+// Export functions and helpers
 module.exports = {
-    sequelize,
-    Product,
-    Customer,
-    Invoice,
-    InvoiceItem,
     setupDatabase,
-    Op,
-    dbPath // Export dbPath for debugging purposes
+    getDatabase,
+    SQL,
+    dbHelpers,
+    // Export function to save database state if needed
+    saveDatabase: () => {
+        if (db) {
+            const data = db.export();
+            const buffer = Buffer.from(data);
+            return buffer;
+        }
+        return null;
+    },
+    // Export function to load database state if needed
+    loadDatabase: (buffer) => {
+        if (buffer) {
+            db = new SQL.Database(buffer);
+            return true;
+        }
+        return false;
+    }
 };
